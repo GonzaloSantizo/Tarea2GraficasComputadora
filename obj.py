@@ -1,3 +1,5 @@
+from texture import Texture
+
 class Obj(object):
     def __init__(self,filename):
         with open(filename,"r") as file:
@@ -11,6 +13,8 @@ class Obj(object):
         for line in self.lines:
             try:
                 prefix,value = line.split(" ",1)
+                prefix = prefix.strip()
+                value = value.strip()
             except:
                 continue
 

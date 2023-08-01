@@ -1,8 +1,13 @@
 import struct
 from collections import namedtuple
-import numpy as np
 
 from obj import Obj
+import ml
+from ml import barycentricCoords
+import numpy as np
+from math import pi,sin,cos
+
+from texture import Texture
 
 V2 = namedtuple('Point2',['x','y'])
 V3 = namedtuple('Point2',['x','y','z'])
@@ -33,13 +38,16 @@ class Model(object):
         model = Obj(filename)
 
         self.vertices = model.vertices
-        self.texcoords = model.textcoords
+        self.textcoords = model.textcoords
         self.normals = model.normals
         self.faces = model.faces
 
         self.translate = translate
         self.rotate = rotate
         self.scale = scale
+
+    def LoadTexture(self,textureName):
+        self.texture = Texture(textureName)
 
 class Renderer(object):
     def __init__(self,width,height):
@@ -59,18 +67,27 @@ class Renderer(object):
         self.primitiveType = TRIANGLES
         self.vertexBuffer = []
 
+        self.activeTexture = None
+
     def glAddVertices(self,verts,):
         for vert in verts:
             self.vertexBuffer.append(vert)
 
-    def glPrimitiveAssembly(self,tVerts):
+    def glPrimitiveAssembly(self,tVerts,tTextCoords):
         primitives = []
         if self.primitiveType==TRIANGLES:
             for i in range(0,len(tVerts),3):
                 triangle = []
+                # Verts
                 triangle.append(tVerts[i])
                 triangle.append(tVerts[i+1])
                 triangle.append(tVerts[i+2])
+
+                # TextCoords
+                triangle.append(tTextCoords[i])
+                triangle.append(tTextCoords[i + 1])
+                triangle.append(tTextCoords[i + 2])
+
                 primitives.append(triangle)
 
         return primitives
@@ -83,27 +100,144 @@ class Renderer(object):
 
     def glClear(self):
         self.pixels = [[self.clearColor for y in range(self.height)] for x in range(self.width)]
+        self.zbuffer = [[float('inf') for y in range(self.height)] for x in range(self.width)]
 
     def glPoint(self,x,y,clr=None):
         if 0<=x<self.width and 0<=y<self.height:
             self.pixels[x][y] = clr or self.currColor
 
-    def glTriangle(self,v0,v1,v2,clr=None):
-        self.glLine(v0,v1,clr or self.currColor)
-        self.glLine(v1,v2,clr or self.currColor)
-        self.glLine(v2,v0,clr or self.currColor)
+    def glTriangle(self,A,B,C,clr=None):
+        #self.glLine(v0,v1,clr or self.currColor)
+        #self.glLine(v1,v2,clr or self.currColor)
+        #self.glLine(v2,v0,clr or self.currColor)
 
-    def glModelMatrix(self,translate=(0,0,0),scale=(1,1,1)):
+        if A[1]<B[1]:
+            A,B = B,A
+        if A[1]<C[1]:
+            A,C = C,A
+        if B[1]<C[1]:
+            B,C = C,B
+
+        self.glLine(A, B, clr or self.currColor)
+        self.glLine(B,C,clr or self.currColor)
+        self.glLine(C,A,clr or self.currColor)
+
+        def flatBottom(vA,vB,vC):
+            try:
+                mBA = (vB[0]-vA[0])/(vB[1]-vA[1])
+                mCA = (vC[0]-vA[0])/(vC[1]-vA[1])
+            except:
+                pass
+            else:
+                x0 = vB[0]
+                x1 = vC[0]
+
+                for y in range(int(vB[1]),int(vA[1])):
+                    self.glLine(V2(x0,y),V2(x1,y),clr or self.currColor)
+                    x0 += mBA
+                    x1 += mCA
+
+        def flatTop(vA,vB,vC):
+            try:
+                mCA = (vC[0]-vA[0])/(vC[1]-vA[1])
+                mCB = (vC[0]-vB[0])/(vC[1]-vB[1])
+            except:
+                pass
+            else:
+                x0 = vA[0]
+                x1 = vB[0]
+
+                for y in range(int(vA[1]),int(vC[1]),-1):
+                    self.glLine(V2(x0,y),V2(x1,y),clr or self.currColor)
+                    x0 -= mCA
+                    x1 -= mCB
+
+
+        if B[1] == C[1]:
+            #Parte plana abajo
+            flatBottom(A,B,C)
+        elif A[1] == B[1]:
+            #Parte plana arriba
+            flatTop(A,B,C)
+        else:
+            #Dibujar ambos casos con un nuevo
+            #vértice D
+            #Teorema del intercepto
+            D = (A[0]+((B[1]-A[1])/(C[1]-A[1]))*(C[0]-A[0]),B[1])
+            flatBottom(A,B,D)
+            flatTop(B,D,C)
+
+    def glTriangle_bc(self,A,B,C,vtA,vtB,vtC):
+        minX = round(min(A[0],B[0],C[0]))
+        maxX = round(max(A[0],B[0],C[0]))
+        minY = round(min(A[1],B[1],C[1]))
+        maxY = round(max(A[1],B[1],C[1]))
+
+        colorA = (1,0,0)
+        colorB = (0,1,0)
+        colorC = (0,0,1)
+
+        for x in range(minX,maxX+1):
+            for y in range(minY,maxY+1):
+                if 0 <= x < self.width and 0 <= y < self.height:
+                    P = (x,y)
+                    bCoords=barycentricCoords(A,B,C,P)
+
+                    if bCoords!=None:
+                        u,v,w = bCoords
+
+                        z = u*A[2]+v*B[2]+w*C[2]
+
+                        if z<self.zbuffer[x][y]:
+                            self.zbuffer[x][y] = z
+
+                            uvs = (u*vtA[0]+v*vtB[0]+w*vtC[0],
+                                   u*vtA[1]+v*vtB[1]+w*vtC[1])
+
+                            if self.fragmentShader != None:
+                                colorP = self.fragmentShader(textCoords = uvs,texture = self.activeTexture)
+
+                                self.glPoint(x, y, color(colorP[0],colorP[1],colorP[2]))
+                            else:
+                                self.glPoint(x, y, colorP)
+
+
+    def glModelMatrix(self,translate=(0,0,0),rotate=(0,0,0),scale=(1,1,1)):
         translation = np.matrix([[1,0,0,translate[0]],
-                                 [0,1,0,translate[1]],
-                                 [0,0,1,translate[2]],
-                                 [0,0,0,1]])
-        scaleMat = np.matrix([[scale[0],0,0,0],
-                                 [0,scale[1],0,0],
-                                 [0,0,scale[2],0],
-                                 [0,0,0,1]])
+                        [0,1,0,translate[1]],
+                        [0,0,1,translate[2]],
+                        [0,0,0,1]])
 
-        return translation*scaleMat
+        rotMat = self.glRotationMatrix(rotate[0],rotate[1],rotate[2])
+
+        scaleMat = np.matrix([[scale[0],0,0,0],
+                    [0,scale[1],0,0],
+                    [0,0,scale[2],0],
+                    [0,0,0,1]])
+
+        return translation * rotMat * scaleMat
+
+    def glRotationMatrix(self,pitch=0,yaw=0,roll=0):
+        pitch += pi/180
+        yaw *= pi/180
+        roll *= pi/180
+
+        pitchMat = np.matrix([[1,0,0,0],
+                              [0,cos(pitch),-sin(pitch),0],
+                              [0,sin(pitch),cos(pitch),0],
+                              [0,0,0,1]])
+
+        yawMat = np.matrix([[cos(yaw),0,sin(yaw),0],
+                              [0,1,0,0],
+                              [-sin(yaw),0,cos(yaw),0],
+                              [0,0,0,1]])
+
+        rollMat = np.matrix([[cos(roll),-sin(roll),0,0],
+                              [sin(roll),cos(roll),0,0],
+                              [0,0,1,0],
+                              [0,0,0,1]])
+
+        return pitchMat * yawMat * rollMat
 
     def glLine(self,v0,v1,clr=None):
         #Bresenham line algorithm
@@ -169,15 +303,19 @@ class Renderer(object):
 
                 limit+=1
 
-    def glLoadModel(self,filename,translate=(0,0,0),rotate=(0,0,0),scale=(1,1,1)):
-        self.objects.append(Model(filename,translate,rotate,scale))
+    def glLoadModel(self,filename,textureName,translate=(0,0,0),rotate=(0,0,0),scale=(1,1,1)):
+        model = Model(filename,translate,rotate,scale)
+        model.LoadTexture(textureName)
+        self.objects.append(model)
 
 
     def glRender(self):
         transformedVerts = []
+        textCoords = []
 
         for model in self.objects:
-            mMat = self.glModelMatrix(model.translate,model.scale)
+            self.activeTexture = model.texture
+            mMat = self.glModelMatrix(model.translate,model.rotate,model.scale)
 
             for face in model.faces:
                 vertCount = len(face)
@@ -204,93 +342,57 @@ class Renderer(object):
                     transformedVerts.append(v2)
                     transformedVerts.append(v3)
 
+                vt0 = model.textcoords[face[0][1]-1]
+                vt1 = model.textcoords[face[1][1]-1]
+                vt2 = model.textcoords[face[2][1]-1]
+                if vertCount==4:
+                    vt3 = model.textcoords[face[3][1] - 1]
+
+                textCoords.append(vt0)
+                textCoords.append(vt1)
+                textCoords.append(vt2)
+                if vertCount==4:
+                    textCoords.append(vt0)
+                    textCoords.append(vt2)
+                    textCoords.append(vt3)
+
+
         #for vert in self.vertexBuffer:
         #    if self.vertexShader:
         #        transformedVerts.append(self.vertexShader(vert, modelMatrix=self.modelMatrix))
         #    else:
         #        transformedVerts.append(vert)
 
-        primitives = self.glPrimitiveAssembly(transformedVerts)
-
-        primColor = None
-        if self.fragmentShader:
-            primColor = self.fragmentShader()
-            primColor = color(primColor[0],primColor[1],primColor[2])
-        else:
-            primColor = self.currColor
+        primitives = self.glPrimitiveAssembly(transformedVerts,textCoords)
 
         # Rasterizando las primitivas
         for prim in primitives:
             if self.primitiveType==TRIANGLES:
-                self.glTriangle(prim[0],prim[1],prim[2],primColor)
+                self.glTriangle_bc(prim[0],prim[1],prim[2],prim[3],prim[4],prim[5])
 
-    def glPolygon(self, vertices, clr=None):
-        num_vertices = len(vertices)
-
-        # Calculate the bounding box of the polygon
-        min_x, min_y = max_x, max_y = vertices[0]
-        for x, y in vertices:
-            min_x = min(min_x, x)
-            max_x = max(max_x, x)
-            min_y = min(min_y, y)
-            max_y = max(max_y, y)
-
-        # Convert the color to the expected format (b, g, r)
-        color_byte = clr or self.currColor
-        b, g, r = color_byte
-
-        # Loop through each row in the bounding box
-        for y in range(min_y, max_y + 1):
-            intersections = []
-
-            # Loop through each edge of the polygon
-            for i in range(num_vertices):
-                j = (i + 1) % num_vertices
-                v0 = vertices[i]
-                v1 = vertices[j]
-
-                # Check if the edge intersects with the current row (y)
-                if v0[1] < y and v1[1] >= y or v1[1] < y and v0[1] >= y:
-                    x_intersection = v0[0] + (y - v0[1]) / (v1[1] - v0[1]) * (v1[0] - v0[0])
-                    intersections.append(x_intersection)
-
-            # Sort the intersection points
-            intersections.sort()
-
-            # Fill the pixels between pairs of intersections
-            for i in range(0, len(intersections), 2):
-                x_start = int(intersections[i])
-                x_end = min(int(intersections[i + 1]), max_x)
-
-                # Fill the row with the specified color
-                for x in range(x_start, x_end + 1):
-                    self.glPoint(x, y, (b, g, r))
-
-
-    def glFinish(self, filename):
-        with open(filename, "wb") as file:
-            # Header
+    def glFinish(self,filename):
+        with open(filename,"wb") as file:
+            #Header
             file.write(char("B"))
             file.write(char("M"))
-            file.write(dword(14 + 40 + (self.width * self.height * 3)))
+            file.write(dword(14+40+(self.width*self.height*3)))
             file.write(dword(0))
-            file.write(dword(14 + 40))
+            file.write(dword(14+40))
 
-            # InfoHeader
+            #InfoHeader
             file.write(dword(40))
             file.write(dword(self.width))
             file.write(dword(self.height))
             file.write(word(1))
             file.write(word(24))
             file.write(dword(0))
-            file.write(dword(self.width * self.height * 3))
+            file.write(dword((self.width*self.height*3)))
             file.write(dword(0))
             file.write(dword(0))
             file.write(dword(0))
             file.write(dword(0))
 
-            # Color table
+            #Color table
             for y in range(self.height):
                 for x in range(self.width):
-                    # Convert color tuple to bytes and write to file
-                    file.write(bytes(self.pixels[x][y]))
+                    file.write(self.pixels[x][y])
